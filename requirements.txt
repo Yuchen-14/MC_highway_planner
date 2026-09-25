@@ -1,0 +1,4 @@
+PyQt6>=6.6.0
+anvil-parser2>=0.10.6
+Pillow>=10.0.0
+nbtlib>=2.0.0
