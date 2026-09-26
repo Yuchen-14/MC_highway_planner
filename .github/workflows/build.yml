@@ -5,28 +5,36 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Checkout
+        run: git clone https://github.com/${{ github.repository }}.git .
+        shell: bash
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+        shell: bash
 
       - name: Build EXE
         run: pyinstaller --onefile --windowed --name HighwayPlanner --collect-all anvil --collect-all nbtlib main.py
         shell: bash
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HighwayPlanner-Windows
-          path: dist/HighwayPlanner.exe
+      - name: Push to builds branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan builds
+          git rm -rf .
+          cp dist/HighwayPlanner.exe .
+          git add HighwayPlanner.exe
+          git commit -m "Build $(date +%Y%m%d-%H%M%S)"
+          git push origin builds --force
+        shell: bash
