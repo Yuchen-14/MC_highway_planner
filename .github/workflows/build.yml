@@ -29,12 +29,12 @@ jobs:
 
       - name: Push to builds branch
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan builds
-          git rm -rf .
-          cp dist/HighwayPlanner.exe .
-          git add HighwayPlanner.exe
-          git commit -m "Build $(date +%Y%m%d-%H%M%S)"
-          git push origin builds --force
+         git config user.name "github-actions[bot]"
+         git config user.email "github-actions[bot]@users.noreply.github.com"
+         git checkout --orphan builds
+         git rm -rf .
+         cp dist/HighwayPlanner.exe .
+         git add HighwayPlanner.exe
+         git commit -m "Build $(date +%Y%m%d-%H%M%S)"
+         git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git builds --force
         shell: bash
