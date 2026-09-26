@@ -39,6 +39,14 @@ class MainWindow(QMainWindow):
         self.load_thread = None
         self._loaded_regions = set()
 
+        # 图层项：(region_key) -> {layer_name: QGraphicsPixmapItem}
+        self._region_layers = {}
+        self._layer_visibility = {
+            "texture": True,
+            "contour": False,
+            "preview": True,
+        }
+
         # 地图视图
         self.map_view = MapView(self)
         self.setCentralWidget(self.map_view)
@@ -194,27 +202,45 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(current)
         self.status_bar.showMessage(message)
 
-    def _on_region_ready(self, region_x, region_z, qimage):
-        """在主线程把区域图像添加到场景"""
-        pixmap = QPixmap.fromImage(qimage)
-        item = QGraphicsPixmapItem(pixmap)
+    def _on_region_ready(self, region_x, region_z, layers):
+        """为每个图层创建一个 QGraphicsPixmapItem，按��见性设置"""
+        from PyQt6.QtWidgets import QGraphicsPixmapItem
+        from PyQt6.QtGui import QPixmap
 
-        # 场景坐标：1 单位 = 1 方块
-        # 图像中 1 方块 = BLOCK_PIXEL 像素
-        # 所以要把图像缩放到 方块单位
+        key = (region_x, region_z)
         scene_x = region_x * 512
         scene_z = region_z * 512
-        item.setPos(scene_x, scene_z)
-        item.setScale(1.0 / BLOCK_PIXEL)
 
-        self.map_view.scene().addItem(item)
-        self._loaded_regions.add((region_x, region_z))
+        items = {}
+        for layer_name, qimage in layers.items():
+            pixmap = QPixmap.fromImage(qimage)
+            item = QGraphicsPixmapItem(pixmap)
+            item.setPos(scene_x, scene_z)
+            item.setScale(1.0 / BLOCK_PIXEL)
+            item.setZValue(self._layer_z(layer_name))
+            item.setVisible(self._layer_visibility.get(layer_name, True))
+            self.map_view.scene().addItem(item)
+            items[layer_name] = item
 
-        # 首次加载时，自动缩放到合适的视野
-        if len(self._loaded_regions) == 1:
+        self._region_layers[key] = items
+        self._loaded_regions.add(key)
+
+        # 首次加载时缩放到合适视野
+        if len(self._loaded_regions) == 1 and "texture" in items:
             self.map_view.fitInView(
-                item, Qt.AspectRatioMode.KeepAspectRatio
+                items["texture"], Qt.AspectRatioMode.KeepAspectRatio
             )
+
+
+    @staticmethod
+    def _layer_z(layer_name):
+        """决定图层叠放顺序"""
+        return {
+            "preview": 0,
+            "texture": 10,
+            "contour": 20,
+        }.get(layer_name, 0)
+
 
     def _on_load_finished(self):
         self.progress_bar.hide()
@@ -258,8 +284,13 @@ class MainWindow(QMainWindow):
 
     # ---------------- 图层开关（占位） ----------------
     def _on_layer_toggle(self):
-        # 第二阶段再实现
-        pass
+        """切换图层可见性"""
+        self._layer_visibility["texture"] = self.texture_action.isChecked()
+        self._layer_visibility["contour"] = self.contour_action.isChecked()
+
+        for items in self._region_layers.values():
+            for name, item in items.items():
+                item.setVisible(self._layer_visibility.get(name, True))
 
     # ---------------- 关闭 ----------------
     def closeEvent(self, event):
