@@ -3,24 +3,31 @@ import json
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtGui import QAction, QPixmap
+from PyQt6.QtGui import QAction, QPixmap, QColor, QPen, QBrush, QPolygonF
 from PyQt6.QtWidgets import (
-    QMainWindow, QMenuBar, QStatusBar, QProgressBar,
-    QMessageBox, QGraphicsPixmapItem, QFileDialog,
+    QMainWindow, QStatusBar, QProgressBar, QMessageBox,
+    QGraphicsPixmapItem, QGraphicsPathItem, QGraphicsEllipseItem,
+    QGraphicsLineItem, QDockWidget,
 )
+from PyQt6.QtGui import QPainterPath
 
 from core import game_locator
 from core.block_mapper import BlockMapper
-from core.terrain_scanner import TerrainScanner
+from core.highway import HighwayManager, Highway
+from core.seed_reader import read_world_seed
+from core.terrain_scanner import (
+    TerrainScanner, WORLD_MAX_Y, WORLD_MIN_Y, AIR_IDS,
+)
 from core.texture_extractor import (
     extract_block_textures, get_cache_dir, has_textures,
 )
 from core.world_reader import WorldReader
-from core.seed_reader import read_world_seed
 
 from ui.config_dialog import ConfigDialog
+from ui.edit_panel import EditPanel, NewHighwayDialog
 from ui.load_thread import WorldLoadThread, BLOCK_PIXEL
 from ui.map_view import MapView
+from ui.preview_thread import PreviewLoader
 from ui.world_selector import WorldSelectorDialog
 
 
@@ -31,28 +38,46 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("高速公路规划器")
-        self.resize(1280, 800)
+        self.resize(1360, 840)
 
-        # ���态
+        # 状态
         self.minecraft_dir = None
         self.current_world_reader = None
         self.block_mapper = None
         self.load_thread = None
-        self._loaded_regions = set()
+        self.preview_thread = None
+        self.world_seed = None
 
-        # 图层项：(region_key) -> {layer_name: QGraphicsPixmapItem}
-        self._region_layers = {}
+        # 道路数据
+        self.highway_manager = HighwayManager()
+
+        # 已加载的 region
+        self._region_layers = {}       # (rx, rz) -> {layer: QGraphicsPixmapItem}
+        self._loaded_regions = set()   # 已渲染过的 region（真实或预览）
+        self._real_regions = set()     # 来自存档的 region
+        self._queued_regions = set()
+
+        # 编辑状态
+        self._edit_mode = False
+        self._temp_waypoint_items = []  # 预览线相关的图元
+        self._preview_line_item = None
+        self._preview_last_pos = None
+
+        # 图层可见性
         self._layer_visibility = {
+            "preview": True,
             "texture": True,
             "contour": False,
-            "preview": True,
+            "road": True,
         }
 
-        # 地图视图
+        # 地图
         self.map_view = MapView(self)
         self.setCentralWidget(self.map_view)
         self.map_view.block_hovered.connect(self._on_block_hovered)
         self.map_view.mouse_left.connect(self._on_mouse_left)
+        self.map_view.viewport_changed.connect(self._on_viewport_changed)
+        self.map_view.block_clicked.connect(self._on_block_clicked)
 
         # 状态栏
         self.status_bar = QStatusBar()
@@ -61,6 +86,19 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximumWidth(240)
         self.progress_bar.hide()
         self.status_bar.addPermanentWidget(self.progress_bar)
+
+        # 编辑面板（dock）
+        self.edit_panel = EditPanel(self.highway_manager, self)
+        self.edit_panel.highway_selected.connect(self._on_highway_selected)
+        self.edit_panel.highway_deleted.connect(self._on_highway_deleted)
+        self.edit_panel.new_highway_requested.connect(self._on_new_highway)
+        self.edit_panel.new_ramp_requested.connect(self._on_new_ramp)
+
+        self.edit_dock = QDockWidget("编辑", self)
+        self.edit_dock.setWidget(self.edit_panel)
+        self.edit_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.edit_dock)
+        self.edit_dock.hide()  # 默认隐藏，通过菜单打开
 
         self._build_menu()
         self._load_config()
@@ -89,15 +127,38 @@ class MainWindow(QMainWindow):
         # 图层
         layer_menu = menubar.addMenu("图层")
 
-        self.texture_action = QAction("纹理图层", self, checkable=True)
-        self.texture_action.setChecked(True)
+        self.texture_action = QAction("纹理图层", self, checkable=True, checked=True)
         self.texture_action.triggered.connect(self._on_layer_toggle)
         layer_menu.addAction(self.texture_action)
 
-        self.contour_action = QAction("等高线图层", self, checkable=True)
-        self.contour_action.setChecked(False)
+        self.contour_action = QAction("等高线图层", self, checkable=True, checked=False)
         self.contour_action.triggered.connect(self._on_layer_toggle)
         layer_menu.addAction(self.contour_action)
+
+        self.preview_action = QAction("预览地形图层", self, checkable=True, checked=True)
+        self.preview_action.triggered.connect(self._on_layer_toggle)
+        layer_menu.addAction(self.preview_action)
+
+        self.road_action = QAction("道路图层", self, checkable=True, checked=True)
+        self.road_action.triggered.connect(self._on_layer_toggle)
+        layer_menu.addAction(self.road_action)
+
+        # 编辑
+        edit_menu = menubar.addMenu("编辑")
+
+        open_panel_action = QAction("打开菜单", self)
+        open_panel_action.triggered.connect(self._on_open_edit_panel)
+        edit_menu.addAction(open_panel_action)
+
+        edit_menu.addSeparator()
+
+        new_hw_action = QAction("新建高速公路", self)
+        new_hw_action.triggered.connect(self._on_new_highway)
+        edit_menu.addAction(new_hw_action)
+
+        new_ramp_action = QAction("新建匝道", self)
+        new_ramp_action.triggered.connect(self._on_new_ramp)
+        edit_menu.addAction(new_ramp_action)
 
     # ---------------- 配置 ----------------
     def _load_config(self):
@@ -130,18 +191,14 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"已配置游戏目录：{self.minecraft_dir}")
 
     def _try_extract_textures(self):
-        """尝试从已安装版本中提取纹理"""
         if not self.minecraft_dir:
             return
-
         versions = game_locator.list_installed_versions(self.minecraft_dir)
         if not versions:
             self.status_bar.showMessage("⚠ 未找到 versions，纹理提取不可用")
             return
 
-        # 选最高的版本作为纹理源
         version_name, jar_path = versions[0]
-
         if not has_textures(version_name):
             self.status_bar.showMessage(f"正在提取纹理（{version_name}）...")
             try:
@@ -154,19 +211,16 @@ class MainWindow(QMainWindow):
         cache_dir = get_cache_dir(version_name)
         self.block_mapper = BlockMapper(cache_dir)
 
-    # ---------------- 浏览 / 加载世界 ----------------
+    # ---------------- 加载世界 ----------------
     def _on_browse(self):
         if not self.minecraft_dir:
             QMessageBox.information(self, "提示", "请先配置游戏文件夹")
             return
-
         dlg = WorldSelectorDialog(self.minecraft_dir, self)
         if dlg.exec() != WorldSelectorDialog.DialogCode.Accepted:
             return
-        if not dlg.selected_world_path:
-            return
-
-        self._load_world(dlg.selected_world_path)
+        if dlg.selected_world_path:
+            self._load_world(dlg.selected_world_path)
 
     def _load_world(self, world_path):
         if self.block_mapper is None:
@@ -177,27 +231,38 @@ class MainWindow(QMainWindow):
             self.load_thread.cancel()
             self.load_thread.wait()
 
+        if self.preview_thread:
+            self.preview_thread.stop()
+            self.preview_thread.wait()
+
         self.map_view.clear_map()
-        self._loaded_regions.clear()
         self._region_layers.clear()
+        self._loaded_regions.clear()
+        self._real_regions.clear()
+        self._queued_regions.clear()
 
         self.current_world_reader = WorldReader(world_path)
-
-        # 读取种子
-        seed = read_world_seed(world_path)
-        if seed is None:
-            self.status_bar.showMessage("⚠ 未能读取世界种子，预览地形可能不准确")
+        self.world_seed = read_world_seed(world_path)
+        if self.world_seed is None:
+            self.status_bar.showMessage("⚠ 未能读取世界种子，预览地形可能不准")
+            self.world_seed = 0
 
         version = self.current_world_reader.get_world_version()
         self.setWindowTitle(
             f"高速公路规划器 - {Path(world_path).name} ({version})"
         )
 
+        # 启动预览线程
+        self.preview_thread = PreviewLoader(self.world_seed, self)
+        self.preview_thread.region_ready.connect(self._on_preview_ready)
+        self.preview_thread.start()
+
+        # 启动主加载线程
         self.load_thread = WorldLoadThread(
-            self.current_world_reader, self.block_mapper, seed, self
+            self.current_world_reader, self.block_mapper, self.world_seed, self
         )
         self.load_thread.progress.connect(self._on_load_progress)
-        self.load_thread.region_ready.connect(self._on_region_ready)
+        self.load_thread.region_ready.connect(self._on_real_region_ready)
         self.load_thread.finished_loading.connect(self._on_load_finished)
         self.load_thread.error.connect(self._on_load_error)
 
@@ -205,21 +270,42 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.load_thread.start()
 
+    # ---------------- 加载回调 ----------------
     def _on_load_progress(self, current, total, message):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
         self.status_bar.showMessage(message)
 
-    def _on_region_ready(self, region_x, region_z, layers):
-        """为每个图层创建一个 QGraphicsPixmapItem，按可见性设置"""
-        from PyQt6.QtWidgets import QGraphicsPixmapItem
-        from PyQt6.QtGui import QPixmap
+    def _on_real_region_ready(self, region_x, region_z, layers):
+        """来自存档的真实区块"""
+        self._real_regions.add((region_x, region_z))
+        self._add_region_items(region_x, region_z, layers)
+        self._loaded_regions.add((region_x, region_z))
 
+        # 首次加载时自动缩放到合适视野
+        if len(self._loaded_regions) == 1 and "texture" in layers:
+            from PyQt6.QtWidgets import QGraphicsPixmapItem
+            key = (region_x, region_z)
+            if key in self._region_layers and "texture" in self._region_layers[key]:
+                self.map_view.fitInView(
+                    self._region_layers[key]["texture"],
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                )
+
+    def _on_preview_ready(self, region_x, region_z, layers):
+        """来自预览线程的区块"""
+        self._add_region_items(region_x, region_z, layers)
+        self._loaded_regions.add((region_x, region_z))
+
+    def _add_region_items(self, region_x, region_z, layers):
+        """把一组图层 QImage 添加到场景"""
         key = (region_x, region_z)
         scene_x = region_x * 512
         scene_z = region_z * 512
 
-        items = {}
+        if key not in self._region_layers:
+            self._region_layers[key] = {}
+
         for layer_name, qimage in layers.items():
             pixmap = QPixmap.fromImage(qimage)
             item = QGraphicsPixmapItem(pixmap)
@@ -227,28 +313,23 @@ class MainWindow(QMainWindow):
             item.setScale(1.0 / BLOCK_PIXEL)
             item.setZValue(self._layer_z(layer_name))
             item.setVisible(self._layer_visibility.get(layer_name, True))
+
+            # 移除同层旧图元
+            old = self._region_layers[key].get(layer_name)
+            if old is not None and old.scene() is not None:
+                old.scene().removeItem(old)
+
             self.map_view.scene().addItem(item)
-            items[layer_name] = item
-
-        self._region_layers[key] = items
-        self._loaded_regions.add(key)
-
-        # 首次加载时缩放到合适视野
-        if len(self._loaded_regions) == 1 and "texture" in items:
-            self.map_view.fitInView(
-                items["texture"], Qt.AspectRatioMode.KeepAspectRatio
-            )
-
+            self._region_layers[key][layer_name] = item
 
     @staticmethod
     def _layer_z(layer_name):
-        """决定图层叠放顺序"""
         return {
             "preview": 0,
             "texture": 10,
             "contour": 20,
+            "road": 100,
         }.get(layer_name, 0)
-
 
     def _on_load_finished(self):
         self.progress_bar.hide()
@@ -259,19 +340,55 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         QMessageBox.critical(self, "加载失败", message)
 
-    # ---------------- 悬停查询 ----------------
+    # ---------------- 动态加载 ----------------
+    def _on_viewport_changed(self):
+        """检测视口范围，为缺块请求预览地形"""
+        if self.current_world_reader is None:
+            return
+        if self.preview_thread is None:
+            return
+
+        rx_min, rx_max, rz_min, rz_max = self.map_view.visible_region_range()
+
+        # 限制一次请求的最大数量，防止快速拖动时瞬间爆队列
+        count = 0
+        for rx in range(rx_min, rx_max + 1):
+            for rz in range(rz_min, rz_max + 1):
+                if count >= 16:
+                    return
+                if (rx, rz) in self._loaded_regions:
+                    continue
+                if (rx, rz) in self._queued_regions:
+                    continue
+                self._queued_regions.add((rx, rz))
+                self.preview_thread.request(rx, rz)
+                count += 1
+
+    # ---------------- 悬停 ----------------
     def _on_block_hovered(self, x, z, _, __):
         if self.current_world_reader is None:
             return
+
+        # 编辑模式：显示光标坐标
+        if self._edit_mode:
+            active = self.highway_manager.get_active()
+            if active:
+                self.status_bar.showMessage(
+                    f"坐标 ({x}, {z}) — 正在绘制 [{active.short_code}] {active.name}"
+                )
+                # 更新预览线
+                if active.waypoints and self._preview_last_pos:
+                    self._update_preview_line(x, z)
+                return
+
         try:
             chunk_x, chunk_z = x >> 4, z >> 4
             local_x, local_z = x & 15, z & 15
             chunk = self.current_world_reader.get_chunk(chunk_x, chunk_z)
             if chunk is None:
-                self.status_bar.showMessage(f"坐标 ({x}, {z}) — 区块未加载")
+                self.status_bar.showMessage(f"坐标 ({x}, {z}) — 预览地形")
                 return
 
-            from core.terrain_scanner import WORLD_MAX_Y, WORLD_MIN_Y, AIR_IDS
             for y in range(WORLD_MAX_Y, WORLD_MIN_Y - 1, -1):
                 try:
                     block = chunk.get_block(local_x, y, local_z)
@@ -288,15 +405,164 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_mouse_left(self):
-        self.status_bar.showMessage("")
+        if not self._edit_mode:
+            self.status_bar.showMessage("")
 
-    # ---------------- 图层开关（占位） ----------------
+    # ---------------- 编辑功能 ----------------
+    def _on_open_edit_panel(self):
+        self.edit_dock.show()
+
+    def _on_new_highway(self):
+        self._create_road(is_ramp=False)
+
+    def _on_new_ramp(self):
+        self._create_road(is_ramp=True)
+
+    def _create_road(self, is_ramp):
+        dlg = NewHighwayDialog(self)
+        if is_ramp:
+            dlg.setWindowTitle("新建匝道")
+            dlg.lanes_spin.setValue(1)
+            dlg.lanes_spin.setEnabled(False)
+        if dlg.exec() != NewHighwayDialog.DialogCode.Accepted:
+            return
+
+        hw = dlg.build_highway(is_ramp=is_ramp)
+        self.highway_manager.add(hw)
+        self.edit_panel.refresh()
+        self.edit_dock.show()
+
+        # 进入编辑模式
+        self._edit_mode = True
+        self.status_bar.showMessage(
+            f"已创建 [{hw.short_code}] {hw.name}，点击地图放置第一个点"
+        )
+
+    def _on_highway_selected(self, hw_id):
+        self.highway_manager.set_active(hw_id)
+        self._edit_mode = True
+        hw = self.highway_manager.get(hw_id)
+        if hw:
+            self.status_bar.showMessage(
+                f"已选中 [{hw.short_code}] {hw.name}，点击地图继续添加点"
+            )
+        self._redraw_all_highways()
+
+    def _on_highway_deleted(self, hw_id):
+        self.highway_manager.remove(hw_id)
+        self.edit_panel.refresh()
+        self._redraw_all_highways()
+
+    def _on_block_clicked(self, x, z):
+        """编辑模式下点击地图，添加路点"""
+        if not self._edit_mode:
+            return
+        active = self.highway_manager.get_active()
+        if active is None:
+            return
+
+        active.add_waypoint(x, z)
+        self.status_bar.showMessage(
+            f"[{active.short_code}] 已添加点 ({x}, {z})，共 {len(active.waypoints)} 个"
+        )
+        self._redraw_highway(active)
+        # 清掉预览线
+        self._clear_preview_line()
+
+    def _redraw_highway(self, hw):
+        """重绘一条高速的所有线段"""
+        # 先移除旧图元
+        if not hasattr(self, "_highway_items"):
+            self._highway_items = {}
+        for item in self._highway_items.pop(hw.id, []):
+            if item.scene() is not None:
+                item.scene().removeItem(item)
+
+        items = []
+
+        if len(hw.waypoints) >= 2:
+            path = QPainterPath()
+            first = hw.waypoints[0]
+            path.moveTo(first.x, first.z)
+            for wp in hw.waypoints[1:]:
+                path.lineTo(wp.x, wp.z)
+
+            line_item = QGraphicsPathItem(path)
+            pen = QPen(QColor(hw.color_hex))
+            pen.setWidthF(3.0 if not hw.is_ramp else 1.5)
+            pen.setCosmetic(True)  # 缩放时线宽不变
+            line_item.setPen(pen)
+            line_item.setZValue(self._layer_z("road"))
+            line_item.setVisible(self._layer_visibility.get("road", True))
+            self.map_view.scene().addItem(line_item)
+            items.append(line_item)
+
+        # 每个路点画一个小圆
+        for wp in hw.waypoints:
+            dot = QGraphicsEllipseItem(wp.x - 2, wp.z - 2, 4, 4)
+            dot.setBrush(QBrush(QColor(hw.color_hex)))
+            dot.setPen(QPen(Qt.GlobalColor.white, 0.5))
+            dot.setZValue(self._layer_z("road") + 1)
+            dot.setVisible(self._layer_visibility.get("road", True))
+            self.map_view.scene().addItem(dot)
+            items.append(dot)
+
+        self._highway_items[hw.id] = items
+
+    def _redraw_all_highways(self):
+        for hw in self.highway_manager.highways:
+            self._redraw_highway(hw)
+
+    def _update_preview_line(self, x, z):
+        """绘制从最后一个路点到鼠标的预览线"""
+        active = self.highway_manager.get_active()
+        if active is None or not active.waypoints:
+            return
+
+        self._clear_preview_line()
+
+        last = active.waypoints[-1]
+        line = QGraphicsLineItem(last.x, last.z, x, z)
+        pen = QPen(QColor(active.color_hex))
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidthF(2.0)
+        pen.setCosmetic(True)
+        line.setPen(pen)
+        line.setZValue(self._layer_z("road") - 1)
+        self.map_view.scene().addItem(line)
+        self._preview_line_item = line
+
+    def _clear_preview_line(self):
+        if self._preview_line_item is not None:
+            if self._preview_line_item.scene() is not None:
+                self._preview_line_item.scene().removeItem(self._preview_line_item)
+            self._preview_line_item = None
+
+    # ---------------- 图层 ----------------
     def _on_layer_toggle(self):
-        """切换图层可见性"""
         self._layer_visibility["texture"] = self.texture_action.isChecked()
         self._layer_visibility["contour"] = self.contour_action.isChecked()
+        self._layer_visibility["preview"] = self.preview_action.isChecked()
+        self._layer_visibility["road"] = self.road_action.isChecked()
 
         for items in self._region_layers.values():
+            for name, item in items.items():
+                item.setVisible(self._layer_visibility.get(name, True))
+
+        if hasattr(self, "_highway_items"):
+            for items in self._highway_items.values():
+                for item in items:
+                    item.setVisible(self._layer_visibility.get("road", True))
+
+    # ---------------- 关闭 ----------------
+    def closeEvent(self, event):
+        if self.load_thread and self.load_thread.isRunning():
+            self.load_thread.cancel()
+            self.load_thread.wait(3000)
+        if self.preview_thread:
+            self.preview_thread.stop()
+            self.preview_thread.wait(3000)
+        super().closeEvent(event)egion_layers.values():
             for name, item in items.items():
                 item.setVisible(self._layer_visibility.get(name, True))
 
