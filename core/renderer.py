@@ -53,27 +53,31 @@ def render_texture_layer(surface_blocks, region_x, region_z, block_mapper):
     return image
 
 
-def render_preview_layer(generator, region_x, region_z):
-    """渲染预览地形图层（未加载区块）"""
-    size_px = 512 * BLOCK_PIXEL
-    image = QImage(size_px, size_px, QImage.Format.Format_ARGB32)
-    image.fill(Qt.GlobalColor.transparent)
+PREVIEW_SCALE = 2  # 每个像素 = 2x2 方块
+PREVIEW_SIZE = 512 // PREVIEW_SCALE
 
-    painter = QPainter(image)
+
+def render_preview_layer(generator, region_x, region_z):
+    """渲染预览地形图层（低分辨率 + 放大，避免慢）"""
+    small = QImage(PREVIEW_SIZE, PREVIEW_SIZE, QImage.Format.Format_ARGB32)
+    small.fill(Qt.GlobalColor.transparent)
+
     base_x = region_x * 512
     base_z = region_z * 512
 
-    for lx in range(512):
-        for lz in range(512):
-            wx = base_x + lx
-            wz = base_z + lz
+    for py in range(PREVIEW_SIZE):
+        for px in range(PREVIEW_SIZE):
+            wx = base_x + px * PREVIEW_SCALE
+            wz = base_z + py * PREVIEW_SCALE
             hint = generator.biome_hint(wx, wz)
             color = PREVIEW_COLORS.get(hint, QColor(100, 100, 100, 180))
-            painter.fillRect(lx * BLOCK_PIXEL, lz * BLOCK_PIXEL,
-                             BLOCK_PIXEL, BLOCK_PIXEL, color)
+            small.setPixelColor(px, py, color)
 
-    painter.end()
-    return image
+    return small.scaled(
+        512 * BLOCK_PIXEL, 512 * BLOCK_PIXEL,
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.FastTransformation,
+    )
 
 
 def render_contour_layer(generator, region_x, region_z):
