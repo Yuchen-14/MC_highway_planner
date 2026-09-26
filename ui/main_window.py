@@ -16,6 +16,7 @@ from core.texture_extractor import (
     extract_block_textures, get_cache_dir, has_textures,
 )
 from core.world_reader import WorldReader
+from core.seed_reader import read_world_seed
 
 from ui.config_dialog import ConfigDialog
 from ui.load_thread import WorldLoadThread, BLOCK_PIXEL
@@ -32,7 +33,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("高速公路规划器")
         self.resize(1280, 800)
 
-        # 状态
+        # ���态
         self.minecraft_dir = None
         self.current_world_reader = None
         self.block_mapper = None
@@ -172,21 +173,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "缺少纹理", "未提取到纹理，请重新配置游戏文件夹")
             return
 
-        # 清理旧状态
         if self.load_thread and self.load_thread.isRunning():
             self.load_thread.cancel()
             self.load_thread.wait()
 
         self.map_view.clear_map()
         self._loaded_regions.clear()
+        self._region_layers.clear()
 
         self.current_world_reader = WorldReader(world_path)
-        version = self.current_world_reader.get_world_version()
-        self.setWindowTitle(f"高速公路规划器 - {Path(world_path).name} ({version})")
 
-        # 启动后台加载
+        # 读取种子
+        seed = read_world_seed(world_path)
+        if seed is None:
+            self.status_bar.showMessage("⚠ 未能读取世界种子，预览地形可能不准确")
+
+        version = self.current_world_reader.get_world_version()
+        self.setWindowTitle(
+            f"高速公路规划器 - {Path(world_path).name} ({version})"
+        )
+
         self.load_thread = WorldLoadThread(
-            self.current_world_reader, self.block_mapper, self
+            self.current_world_reader, self.block_mapper, seed, self
         )
         self.load_thread.progress.connect(self._on_load_progress)
         self.load_thread.region_ready.connect(self._on_region_ready)
@@ -203,7 +211,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(message)
 
     def _on_region_ready(self, region_x, region_z, layers):
-        """为每个图层创建一个 QGraphicsPixmapItem，按��见性设置"""
+        """为每个图层创建一个 QGraphicsPixmapItem，按可见性设置"""
         from PyQt6.QtWidgets import QGraphicsPixmapItem
         from PyQt6.QtGui import QPixmap
 
