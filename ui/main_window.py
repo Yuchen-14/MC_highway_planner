@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.load_thread = None
         self.preview_thread = None
         self.world_seed = None
+        self._undo_stack = []          # 撤销快照栈
 
         # 道路数据
         self.highway_manager = HighwayManager()
