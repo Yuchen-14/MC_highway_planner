@@ -25,7 +25,8 @@ from core.world_reader import WorldReader
 
 from ui.config_dialog import ConfigDialog
 from ui.edit_panel import EditPanel, NewHighwayDialog
-from ui.load_thread import WorldLoadThread, BLOCK_PIXEL
+from ui.load_thread import WorldLoadThread
+from core.renderer import BLOCK_PIXEL
 from ui.map_view import MapView
 from ui.preview_thread import PreviewLoader
 from ui.world_selector import WorldSelectorDialog
