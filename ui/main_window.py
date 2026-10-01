@@ -162,6 +162,13 @@ class MainWindow(QMainWindow):
         new_ramp_action = QAction("新建匝道", self)
         new_ramp_action.triggered.connect(self._on_new_ramp)
         edit_menu.addAction(new_ramp_action)
+                edit_menu.addSeparator()
+
+        undo_action = QAction("撤销", self)
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)  # Ctrl+Z
+        undo_action.triggered.connect(self._on_undo)
+        edit_menu.addAction(undo_action)
+        self.addAction(undo_action)   # 让快捷键在整个窗口生效
 
     # ---------------- 配置 ----------------
     def _load_config(self):
@@ -419,7 +426,26 @@ class MainWindow(QMainWindow):
         self._create_road(is_ramp=False)
 
     def _on_new_ramp(self):
-        self._create_road(is_ramp=True)
+        # 自动编号：R1、R2、R3 ...
+        count = sum(1 for h in self.highway_manager.highways if h.is_ramp) + 1
+
+        ramp = Highway(
+            name=f"匝道 {count}",
+            short_code=f"R{count}",
+            color="light_gray",
+            lanes=1,
+            height=64,
+            is_ramp=True,
+        )
+        self.highway_manager.add(ramp)
+        self.edit_panel.refresh()
+        self.edit_dock.show()
+
+        # 立即进入编辑模式
+        self._edit_mode = True
+        self.status_bar.showMessage(
+            f"已创建 [{ramp.short_code}]，点击地图开始绘制匝道"
+        )
 
     def _create_road(self, is_ramp):
         dlg = NewHighwayDialog(self)
@@ -452,9 +478,20 @@ class MainWindow(QMainWindow):
         self._redraw_all_highways()
 
     def _on_highway_deleted(self, hw_id):
+        # 先移除这条道路的所有图元
+        if hasattr(self, "_highway_items"):
+            for item in self._highway_items.pop(hw_id, []):
+                if item.scene() is not None:
+                    item.scene().removeItem(item)
+
         self.highway_manager.remove(hw_id)
         self.edit_panel.refresh()
         self._redraw_all_highways()
+
+        # 如果删除的是当前正在编辑的道路，退出编辑模式
+        if self.highway_manager.get_active() is None:
+            self._edit_mode = False
+            self._clear_preview_line()
 
     def _on_block_clicked(self, x, z):
         """编辑模式下点击地图，添加路点"""
@@ -463,6 +500,9 @@ class MainWindow(QMainWindow):
         active = self.highway_manager.get_active()
         if active is None:
             return
+
+        self._push_undo()          # ← 新增
+        active.add_waypoint(x, z)
 
         active.add_waypoint(x, z)
         self.status_bar.showMessage(
@@ -566,3 +606,31 @@ class MainWindow(QMainWindow):
             self.preview_thread.stop()
             self.preview_thread.wait(3000)
         super().closeEvent(event)
+            # ---------------- 撤销 ----------------
+    def _push_undo(self):
+        """把当前所有道路的路点状态压入撤销栈"""
+        snapshot = {}
+        for hw in self.highway_manager.highways:
+            snapshot[hw.id] = [(wp.x, wp.z, wp.y) for wp in hw.waypoints]
+        self._undo_stack.append(snapshot)
+        # 只保留最近 50 步
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+
+    def _on_undo(self):
+        if not self._undo_stack:
+            self.status_bar.showMessage("没有可撤销的操作")
+            return
+
+        snapshot = self._undo_stack.pop()
+
+        # 恢复每条道路的路点
+        for hw in self.highway_manager.highways:
+            if hw.id in snapshot:
+                hw.waypoints = [
+                    Waypoint(x, z, y) for x, z, y in snapshot[hw.id]
+                ]
+
+        self._redraw_all_highways()
+        self._clear_preview_line()
+        self.status_bar.showMessage("已撤销")
