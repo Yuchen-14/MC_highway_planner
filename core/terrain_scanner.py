@@ -4,7 +4,17 @@
 WORLD_MAX_Y = 319
 WORLD_MIN_Y = -64
 
-AIR_IDS = {"minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+# 兼容带前缀和不带前缀两种格式
+AIR_IDS = {"air", "cave_air", "void_air", "minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+
+
+def normalize_block_id(block_id):
+    """统一加上 minecraft: 前缀"""
+    if block_id is None:
+        return None
+    if ":" in block_id:
+        return block_id
+    return f"minecraft:{block_id}"
 
 
 class TerrainScanner:
@@ -32,7 +42,7 @@ class TerrainScanner:
                     if block is None:
                         continue
                     if block.id not in AIR_IDS:
-                        found = (y, block.id)
+                        found = (y, normalize_block_id(block.id))
                         break
 
                 if found is not None:
