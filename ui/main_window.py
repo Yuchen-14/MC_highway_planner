@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+from PyQt6.QtGui import QKeySequence
+from core.highway import HighwayManager, Highway, Waypoint
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QAction, QPixmap, QColor, QPen, QBrush, QPolygonF
 from PyQt6.QtWidgets import (
