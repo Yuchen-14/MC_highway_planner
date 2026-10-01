@@ -7,7 +7,7 @@
 请务必不要下载开头为K的版本！可能存在功能不全等严重问题！  
 ## 下载
 您可以直接下载打包好的应用程序，或下载源代码（请务必保证你已经安装了python环境）  
-### 一键下载最新版[GO!](https://github.com/Yuchen-14/MC_highway_planner/raw/builds/HighwayPlanner.exe)
+### 一键下载最新一次构建版本[GO!](https://github.com/Yuchen-14/MC_highway_planner/raw/builds/HighwayPlanner.exe)
 ## 使用
 1.打开应用程序或使用解释器运行
 2.在顶部的文件菜单中，导入您的我的世界纹理文件夹以及您的版本文件夹，系统通常会自动搜寻这些文件，如果找不到，请手动浏览并选择  
