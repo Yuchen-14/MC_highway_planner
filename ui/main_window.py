@@ -166,13 +166,14 @@ class MainWindow(QMainWindow):
         new_ramp_action = QAction("新建匝道", self)
         new_ramp_action.triggered.connect(self._on_new_ramp)
         edit_menu.addAction(new_ramp_action)
-                edit_menu.addSeparator()
+
+        edit_menu.addSeparator()
 
         undo_action = QAction("撤销", self)
-        undo_action.setShortcut(QKeySequence.StandardKey.Undo)  # Ctrl+Z
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         undo_action.triggered.connect(self._on_undo)
         edit_menu.addAction(undo_action)
-        self.addAction(undo_action)   # 让快捷键在整个窗口生效
+        self.addAction(undo_action)
 
     # ---------------- 配置 ----------------
     def _load_config(self):
