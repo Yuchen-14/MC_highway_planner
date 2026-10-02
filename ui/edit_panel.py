@@ -1,5 +1,6 @@
 """侧边编辑面板：高速公路列表 + 新建对话框"""
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QPixmap, QColor, QIcon
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QDialog, QLineEdit, QComboBox,
@@ -8,14 +9,6 @@ from PyQt6.QtWidgets import (
 
 from core.highway import MC_COLORS, Highway
 
-
-class EditPanel(QWidget):
-    highway_selected = pyqtSignal(str)
-    highway_deleted = pyqtSignal(str)
-    new_highway_requested = pyqtSignal()
-    new_ramp_requested = pyqtSignal()
-    export_requested = pyqtSignal()
-    load_chunks_requested = pyqtSignal()   # ← 新增
 
 class NewHighwayDialog(QDialog):
     def __init__(self, parent=None):
@@ -67,11 +60,12 @@ class NewHighwayDialog(QDialog):
 
 
 class EditPanel(QWidget):
-    highway_selected = pyqtSignal(str)   # highway id
+    highway_selected = pyqtSignal(str)
     highway_deleted = pyqtSignal(str)
     new_highway_requested = pyqtSignal()
     new_ramp_requested = pyqtSignal()
-    export_requested = pyqtSignal()      # ← 新增
+    export_requested = pyqtSignal()
+    load_chunks_requested = pyqtSignal()
 
     def __init__(self, manager, parent=None):
         super().__init__(parent)
@@ -105,7 +99,7 @@ class EditPanel(QWidget):
         del_btn.clicked.connect(self._on_delete)
         layout.addWidget(del_btn)
 
-        #加载区块
+        # 加载区块按钮
         load_chunks_btn = QPushButton("📦 加载区块")
         load_chunks_btn.setMinimumHeight(36)
         load_chunks_btn.setStyleSheet("""
@@ -120,9 +114,8 @@ class EditPanel(QWidget):
         """)
         load_chunks_btn.clicked.connect(self.load_chunks_requested.emit)
         layout.addWidget(load_chunks_btn)
-        
+
         # 出发按钮
-        from PyQt6.QtGui import QFont
         export_btn = QPushButton("🚀 出发")
         export_btn.setMinimumHeight(44)
         font = QFont()
@@ -141,7 +134,7 @@ class EditPanel(QWidget):
         """)
         export_btn.clicked.connect(self.export_requested.emit)
         layout.addWidget(export_btn)
-        
+
         self.refresh()
 
     def refresh(self):
@@ -150,8 +143,6 @@ class EditPanel(QWidget):
             label = f"{h.short_code} {h.name}" + ("（匝道）" if h.is_ramp else "")
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, h.id)
-            # 用颜色画一个小方块
-            from PyQt6.QtGui import QPixmap, QColor, QIcon
             pix = QPixmap(12, 12)
             pix.fill(QColor(h.color_hex))
             item.setIcon(QIcon(pix))
