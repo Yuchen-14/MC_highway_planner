@@ -32,6 +32,7 @@ from core.renderer import BLOCK_PIXEL
 from ui.map_view import MapView
 from ui.preview_thread import PreviewLoader
 from ui.world_selector import WorldSelectorDialog
+from ui.export_thread import ExportThread
 
 
 CONFIG_FILE = Path.home() / ".highway_planner" / "config.json"
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.preview_thread = None
         self.world_seed = None
         self._undo_stack = []          # 撤销快照栈
+        self.export_thread = None
 
         # 道路数据
         self.highway_manager = HighwayManager()
@@ -97,6 +99,7 @@ class MainWindow(QMainWindow):
         self.edit_panel.highway_deleted.connect(self._on_highway_deleted)
         self.edit_panel.new_highway_requested.connect(self._on_new_highway)
         self.edit_panel.new_ramp_requested.connect(self._on_new_ramp)
+        self.edit_panel.export_requested.connect(self._on_export)
 
         self.edit_dock = QDockWidget("编辑", self)
         self.edit_dock.setWidget(self.edit_panel)
@@ -606,6 +609,9 @@ class MainWindow(QMainWindow):
         if self.preview_thread:
             self.preview_thread.stop()
             self.preview_thread.wait(3000)
+        if self.export_thread and self.export_thread.isRunning():
+            self.export_thread.cancel()
+            self.export_thread.wait(3000)
         super().closeEvent(event)
             # ---------------- 撤销 ----------------
     def _push_undo(self):
@@ -635,3 +641,71 @@ class MainWindow(QMainWindow):
         self._redraw_all_highways()
         self._clear_preview_line()
         self.status_bar.showMessage("已撤销")
+    def _on_export(self):
+        if not self.highway_manager.highways:
+            QMessageBox.information(self, "没有道路", "请先创建至少一条道路")
+            return
+        if self.current_world_reader is None:
+            QMessageBox.information(self, "没有存档", "请先加载一个世界")
+            return
+        if self.export_thread and self.export_thread.isRunning():
+            QMessageBox.information(self, "正在导出", "上一次导出还没完成")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "准备写入存档",
+            "写入前请确认：\n\n"
+            "1. 已退出 Minecraft 游戏\n"
+            "2. 已备份存档\n\n"
+            "⚠ 如果游戏正在运行，退出时游戏会覆盖你的修改！\n\n"
+            "是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 地形高度函数（用预览生成器，够用）
+        def height_fn(x, z):
+            try:
+                from core.terrain_generator import PreviewTerrainGenerator
+                if not hasattr(self, "_height_gen"):
+                    self._height_gen = PreviewTerrainGenerator(self.world_seed or 0)
+                return self._height_gen.height_at(x, z)
+            except Exception:
+                return None
+
+        world_path = str(self.current_world_reader.world_path)
+
+        self.export_thread = ExportThread(
+            self.highway_manager.highways,
+            world_path,
+            height_map_fn=height_fn,
+            parent=self,
+        )
+        self.export_thread.progress.connect(self._on_load_progress)
+        self.export_thread.finished_export.connect(self._on_export_finished)
+        self.export_thread.error.connect(self._on_export_error)
+
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.status_bar.showMessage("开始导出...")
+        self.export_thread.start()
+
+    def _on_export_finished(self, success, failed):
+        self.progress_bar.hide()
+        QMessageBox.information(
+            self,
+            "导出完成",
+            f"成功写入 {success} 个方块\n"
+            f"失败 {failed} 个（通常是区域未加载）\n\n"
+            f"现在可以启动游戏查看了。"
+        )
+        self.status_bar.showMessage(
+            f"导出完成：成功 {success}，失败 {failed}"
+        )
+
+    def _on_export_error(self, message):
+        self.progress_bar.hide()
+        QMessageBox.critical(self, "导出失败", message)
