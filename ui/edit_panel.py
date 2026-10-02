@@ -9,6 +9,14 @@ from PyQt6.QtWidgets import (
 from core.highway import MC_COLORS, Highway
 
 
+class EditPanel(QWidget):
+    highway_selected = pyqtSignal(str)
+    highway_deleted = pyqtSignal(str)
+    new_highway_requested = pyqtSignal()
+    new_ramp_requested = pyqtSignal()
+    export_requested = pyqtSignal()
+    load_chunks_requested = pyqtSignal()   # ← 新增
+
 class NewHighwayDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +104,22 @@ class EditPanel(QWidget):
         del_btn = QPushButton("删除选中的道路")
         del_btn.clicked.connect(self._on_delete)
         layout.addWidget(del_btn)
+
+        #加载区块
+        load_chunks_btn = QPushButton("📦 加载区块")
+        load_chunks_btn.setMinimumHeight(36)
+        load_chunks_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1565C0;
+                color: white;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+            QPushButton:pressed { background-color: #0D47A1; }
+        """)
+        load_chunks_btn.clicked.connect(self.load_chunks_requested.emit)
+        layout.addWidget(load_chunks_btn)
         
         # 出发按钮
         from PyQt6.QtGui import QFont
