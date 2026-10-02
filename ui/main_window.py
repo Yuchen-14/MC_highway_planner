@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+from ui.load_chunks_dialog import LoadChunksDialog
+from ui.chunk_loader_thread import ChunkLoaderThread
 from PyQt6.QtGui import QKeySequence
 from core.highway import HighwayManager, Highway, Waypoint
 from PyQt6.QtCore import Qt, QPointF
@@ -53,6 +55,7 @@ class MainWindow(QMainWindow):
         self.world_seed = None
         self._undo_stack = []          # 撤销快照栈
         self.export_thread = None
+        self.chunk_loader_thread = None
 
         # 道路数据
         self.highway_manager = HighwayManager()
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self.edit_panel.new_highway_requested.connect(self._on_new_highway)
         self.edit_panel.new_ramp_requested.connect(self._on_new_ramp)
         self.edit_panel.export_requested.connect(self._on_export)
+        self.edit_panel.load_chunks_requested.connect(self._on_load_chunks)
 
         self.edit_dock = QDockWidget("编辑", self)
         self.edit_dock.setWidget(self.edit_panel)
@@ -613,6 +617,9 @@ class MainWindow(QMainWindow):
         if self.export_thread and self.export_thread.isRunning():
             self.export_thread.cancel()
             self.export_thread.wait(3000)
+        if self.chunk_loader_thread and self.chunk_loader_thread.isRunning():
+            self.chunk_loader_thread.cancel()
+            self.chunk_loader_thread.wait(3000)
         super().closeEvent(event)
             # ---------------- 撤销 ----------------
     def _push_undo(self):
@@ -710,3 +717,56 @@ class MainWindow(QMainWindow):
     def _on_export_error(self, message):
         self.progress_bar.hide()
         QMessageBox.critical(self, "导出失败", message)
+
+    def _on_load_chunks(self):
+        if not self.highway_manager.highways:
+            QMessageBox.information(self, "没有道路", "请先创建至少一条道路")
+            return
+        if self.chunk_loader_thread and self.chunk_loader_thread.isRunning():
+            QMessageBox.information(self, "正在加载", "上一次加载还没完成")
+            return
+
+        dlg = LoadChunksDialog(
+            repo_url="https://github.com/Yuchen-14/MC_highway_planner",
+            parent=self,
+        )
+        if dlg.exec() != LoadChunksDialog.DialogCode.Accepted:
+            return
+
+        params = dlg.get_params()
+
+        self.chunk_loader_thread = ChunkLoaderThread(
+            self.highway_manager.highways,
+            params["host"], params["port"], params["password"],
+            parent=self,
+        )
+        self.chunk_loader_thread.progress.connect(self._on_load_progress)
+        self.chunk_loader_thread.finished_loading.connect(self._on_chunks_loaded)
+        self.chunk_loader_thread.error.connect(self._on_chunks_error)
+
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.chunk_loader_thread.start()
+
+    def _on_chunks_loaded(self, count):
+        self.progress_bar.hide()
+        QMessageBox.information(
+            self,
+            "加载请求已发送",
+            f"已请求游戏加载 {count} 个区块。\n\n"
+            "请等待约 10 秒，让游戏把区块写完，\n"
+            "然后再点「出发」写入高速公路。"
+        )
+        self.status_bar.showMessage(f"已请求加载 {count} 个区块")
+
+    def _on_chunks_error(self, message):
+        self.progress_bar.hide()
+        QMessageBox.critical(
+            self,
+            "加载失败",
+            f"{message}\n\n"
+            "请确认：\n"
+            "1. 游戏正在运行，且已进入世界\n"
+            "2. 启动时加了 RCON 参数\n"
+            "3. 密码正确"
+        )
