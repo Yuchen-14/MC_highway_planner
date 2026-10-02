@@ -63,6 +63,7 @@ class EditPanel(QWidget):
     highway_deleted = pyqtSignal(str)
     new_highway_requested = pyqtSignal()
     new_ramp_requested = pyqtSignal()
+    export_requested = pyqtSignal()      # ← 新增
 
     def __init__(self, manager, parent=None):
         super().__init__(parent)
@@ -95,7 +96,29 @@ class EditPanel(QWidget):
         del_btn = QPushButton("删除选中的道路")
         del_btn.clicked.connect(self._on_delete)
         layout.addWidget(del_btn)
-
+        
+        # 出发按钮
+        from PyQt6.QtWidgets import QPushButton
+        from PyQt6.QtGui import QFont
+        export_btn = QPushButton("🚀 出发")
+        export_btn.setMinimumHeight(44)
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        export_btn.setFont(font)
+        export_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2E7D32;
+                color: white;
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QPushButton:hover { background-color: #388E3C; }
+            QPushButton:pressed { background-color: #1B5E20; }
+        """)
+        export_btn.clicked.connect(self.export_requested.emit)
+        layout.addWidget(export_btn)
+        
         self.refresh()
 
     def refresh(self):
