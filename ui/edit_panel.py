@@ -98,7 +98,6 @@ class EditPanel(QWidget):
         layout.addWidget(del_btn)
         
         # 出发按钮
-        from PyQt6.QtWidgets import QPushButton
         from PyQt6.QtGui import QFont
         export_btn = QPushButton("🚀 出发")
         export_btn.setMinimumHeight(44)
