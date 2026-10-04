@@ -40,8 +40,6 @@ from ui.export_thread import ExportThread
 
 CONFIG_FILE = Path.home() / ".highway_planner" / "config.json"
 
-
-class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("高速公路规划器")
@@ -53,24 +51,24 @@ class MainWindow(QMainWindow):
         self.block_mapper = None
         self.load_thread = None
         self.preview_thread = None
-        self.world_seed = None
-        self._undo_stack = []          # 撤销快照栈
         self.export_thread = None
+        self.world_seed = None
 
         # 道路数据
         self.highway_manager = HighwayManager()
 
         # 已加载的 region
-        self._region_layers = {}       # (rx, rz) -> {layer: QGraphicsPixmapItem}
-        self._loaded_regions = set()   # 已渲染过的 region（真实或预览）
-        self._real_regions = set()     # 来自存档的 region
+        self._region_layers = {}
+        self._loaded_regions = set()
+        self._real_regions = set()
         self._queued_regions = set()
 
         # 编辑状态
         self._edit_mode = False
-        self._temp_waypoint_items = []  # 预览线相关的图元
+        self._temp_waypoint_items = []
         self._preview_line_item = None
         self._preview_last_pos = None
+        self._undo_stack = []
 
         # 图层可见性
         self._layer_visibility = {
@@ -96,15 +94,22 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.status_bar.addPermanentWidget(self.progress_bar)
 
-        # 编辑面板（dock）
+        # 编辑面板（必须在 _build_menu 之前）
+        self.edit_panel = EditPanel(self.highway_manager, self)
+        self.edit_panel.highway_selected.connect(self._on_highway_selected)
+        self.edit_panel.highway_deleted.connect(self._on_highway_deleted)
+        self.edit_panel.new_highway_requested.connect(self._on_new_highway)
+        self.edit_panel.new_ramp_requested.connect(self._on_new_ramp)
+        self.edit_panel.export_requested.connect(self._on_export)
         self.edit_panel.pregenerate_requested.connect(self._on_pregenerate)
 
         self.edit_dock = QDockWidget("编辑", self)
         self.edit_dock.setWidget(self.edit_panel)
         self.edit_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.edit_dock)
-        self.edit_dock.hide()  # 默认隐藏，通过菜单打开
+        self.edit_dock.hide()
 
+        # 最后才菜单
         self._build_menu()
         self._load_config()
 
