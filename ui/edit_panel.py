@@ -65,7 +65,7 @@ class EditPanel(QWidget):
     new_highway_requested = pyqtSignal()
     new_ramp_requested = pyqtSignal()
     export_requested = pyqtSignal()
-    load_chunks_requested = pyqtSignal()
+    pregenerate_requested = pyqtSignal()   # ← 改名
 
     def __init__(self, manager, parent=None):
         super().__init__(parent)
@@ -100,9 +100,9 @@ class EditPanel(QWidget):
         layout.addWidget(del_btn)
 
         # 加载区块按钮
-        load_chunks_btn = QPushButton("📦 加载区块")
-        load_chunks_btn.setMinimumHeight(36)
-        load_chunks_btn.setStyleSheet("""
+        pregen_btn = QPushButton("📦 预生成区块")
+        pregen_btn.setMinimumHeight(36)
+        pregen_btn.setStyleSheet("""
             QPushButton {
                 background-color: #1565C0;
                 color: white;
@@ -112,8 +112,8 @@ class EditPanel(QWidget):
             QPushButton:hover { background-color: #1976D2; }
             QPushButton:pressed { background-color: #0D47A1; }
         """)
-        load_chunks_btn.clicked.connect(self.load_chunks_requested.emit)
-        layout.addWidget(load_chunks_btn)
+        pregen_btn.clicked.connect(self.pregenerate_requested.emit)
+        layout.addWidget(pregen_btn)
 
         # 出发按钮
         export_btn = QPushButton("🚀 出发")
