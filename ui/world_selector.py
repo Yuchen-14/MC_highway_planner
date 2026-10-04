@@ -4,7 +4,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QLabel, QLineEdit,
+    QPushButton, QLabel, QLineEdit, QMessageBox,
 )
 
 from core import game_locator
@@ -15,14 +15,13 @@ class WorldSelectorDialog(QDialog):
     def __init__(self, minecraft_dir, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择存档")
-        self.resize(620, 560)
+        self.resize(660, 600)
         self.minecraft_dir = Path(minecraft_dir)
         self.selected_world_path = None
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("展开版本，选择要加载的世界。没有存档的版本会显示为灰色。"))
+        layout.addWidget(QLabel("展开版本，选择要加载的世界。"))
 
-        # 搜索框
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("搜索："))
         self.search_edit = QLineEdit()
@@ -32,7 +31,7 @@ class WorldSelectorDialog(QDialog):
         layout.addLayout(search_row)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["名称", "版本"])
+        self.tree.setHeaderLabels(["名称", "位置"])
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self.tree)
 
@@ -48,38 +47,41 @@ class WorldSelectorDialog(QDialog):
 
         self._populate()
 
-    # ---------------- 构建树 ----------------
     def _populate(self):
-        # 1. 收集所有版本
+        # 收集版本
         versions = game_locator.list_installed_versions(self.minecraft_dir)
         version_names = [v[0] for v in versions]
 
-        # 2. 收集所有世界，读出它们的游戏版本
+        # 收集世界（4 元组）
         worlds = game_locator.list_worlds(self.minecraft_dir)
-        world_infos = []  # [(world_name, path, world_version), ...]
-        for name, path in worlds:
-            try:
-                reader = WorldReader(path)
-                wv = reader.get_world_version()
-            except Exception:
-                wv = "未知"
-            world_infos.append((name, path, wv))
 
-        # 3. 把每个世界归到匹配的版本文件夹下
-        #    世界版本 1.21.10 应匹配 1.21.10、1.21.10-NeoForge_xxx 等
-        version_to_worlds = {}   # version_folder_name -> [(world_name, path), ...]
-        unmatched = []           # 没找到对应版本文件夹的世界
+        # 版本文件夹 -> [(world_name, path), ...]
+        version_to_worlds = {}
+        unmatched = []   # 全局存档或找不到版本的存档
 
-        for name, path, wv in world_infos:
-            matched = False
-            for vn in version_names:
-                if vn == wv or vn.startswith(wv + "-") or vn.startswith(wv + " "):
-                    version_to_worlds.setdefault(vn, []).append((name, path))
-                    matched = True
-            if not matched:
-                unmatched.append((name, path, wv))
+        for name, path, version_folder, isolated in worlds:
+            if isolated and version_folder in version_names:
+                # 直接归到它的版本文件夹
+                version_to_worlds.setdefault(version_folder, []).append((name, path))
+            else:
+                # 全局存档，尝试按 level.dat 里的版本匹配
+                try:
+                    reader = WorldReader(path)
+                    wv = reader.get_world_version()
+                except Exception:
+                    wv = "未知"
 
-        # 4. 构建树：版本文件夹按名字倒序（新的在上）
+                matched = False
+                for vn in version_names:
+                    if vn == wv or vn.startswith(wv + "-") or vn.startswith(wv + " "):
+                        version_to_worlds.setdefault(vn, []).append((name, path))
+                        matched = True
+                        break
+
+                if not matched:
+                    unmatched.append((name, path, wv))
+
+        # 构建树
         self.tree.clear()
         sorted_versions = sorted(versions, key=lambda x: x[0], reverse=True)
 
@@ -89,13 +91,11 @@ class WorldSelectorDialog(QDialog):
             version_item = QTreeWidgetItem([label, version_name])
 
             if child_worlds:
-                # 有存档：正常颜色
                 for wname, wpath in child_worlds:
-                    child = QTreeWidgetItem([wname, version_name])
+                    child = QTreeWidgetItem([wname, "版本隔离" if "versions" in str(wpath) else "全局"])
                     child.setData(0, 0x0100, str(wpath))
                     version_item.addChild(child)
             else:
-                # 没存档：灰色提示
                 placeholder = QTreeWidgetItem(["（此版本下没有存档）", ""])
                 placeholder.setForeground(0, Qt.GlobalColor.gray)
                 placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -103,9 +103,8 @@ class WorldSelectorDialog(QDialog):
 
             self.tree.addTopLevelItem(version_item)
 
-        # 5. 未匹配的世界单独放一组
         if unmatched:
-            other = QTreeWidgetItem([f"其他（未找到对应版本）  ({len(unmatched)} 个)", ""])
+            other = QTreeWidgetItem([f"其他（未匹配版本）  ({len(unmatched)} 个)", ""])
             for wname, wpath, wv in unmatched:
                 child = QTreeWidgetItem([wname, wv])
                 child.setData(0, 0x0100, str(wpath))
@@ -114,7 +113,6 @@ class WorldSelectorDialog(QDialog):
 
         self.tree.resizeColumnToContents(0)
 
-    # ---------------- 搜索 ----------------
     def _on_search_changed(self, text):
         text = text.strip().lower()
         for i in range(self.tree.topLevelItemCount()):
@@ -122,14 +120,12 @@ class WorldSelectorDialog(QDialog):
             top_text = top.text(0).lower()
 
             if not text:
-                # 清空搜索：恢复所有，折叠
                 top.setHidden(False)
                 top.setExpanded(False)
                 for j in range(top.childCount()):
                     top.child(j).setHidden(False)
                 continue
 
-            # 版本名匹配 → 整个展开
             if text in top_text:
                 top.setHidden(False)
                 top.setExpanded(True)
@@ -137,7 +133,6 @@ class WorldSelectorDialog(QDialog):
                     top.child(j).setHidden(False)
                 continue
 
-            # 检查子世界是否匹配
             any_child_match = False
             for j in range(top.childCount()):
                 child = top.child(j)
@@ -153,7 +148,6 @@ class WorldSelectorDialog(QDialog):
             else:
                 top.setHidden(True)
 
-    # ---------------- 选择 ----------------
     def _on_double_click(self, item, column):
         path_str = item.data(0, 0x0100)
         if path_str:
@@ -169,8 +163,4 @@ class WorldSelectorDialog(QDialog):
             self.selected_world_path = path_str
             self.accept()
         else:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "提示",
-                "请展开版本，双击一个世界名来加载。"
-            )
+            QMessageBox.information(self, "提示", "请展开版本，双击一个世界名来加载。")
