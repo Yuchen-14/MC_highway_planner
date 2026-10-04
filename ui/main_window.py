@@ -5,6 +5,7 @@ from pathlib import Path
 from ui.pregenerate_dialog import PregenerateDialog
 from core.datapack_builder import build_datapack, collect_region_coords
 
+
 from PyQt6.QtGui import QKeySequence
 from core.highway import HighwayManager, Highway, Waypoint
 from PyQt6.QtCore import Qt, QPointF
