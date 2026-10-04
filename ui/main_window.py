@@ -2,8 +2,9 @@
 import json
 from pathlib import Path
 
-from ui.load_chunks_dialog import LoadChunksDialog
-from ui.chunk_loader_thread import ChunkLoaderThread
+from ui.pregenerate_dialog import PregenerateDialog
+from core.datapack_builder import build_datapack, collect_region_coords
+
 from PyQt6.QtGui import QKeySequence
 from core.highway import HighwayManager, Highway, Waypoint
 from PyQt6.QtCore import Qt, QPointF
@@ -55,7 +56,6 @@ class MainWindow(QMainWindow):
         self.world_seed = None
         self._undo_stack = []          # 撤销快照栈
         self.export_thread = None
-        self.chunk_loader_thread = None
 
         # 道路数据
         self.highway_manager = HighwayManager()
@@ -97,13 +97,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
         # 编辑面板（dock）
-        self.edit_panel = EditPanel(self.highway_manager, self)
-        self.edit_panel.highway_selected.connect(self._on_highway_selected)
-        self.edit_panel.highway_deleted.connect(self._on_highway_deleted)
-        self.edit_panel.new_highway_requested.connect(self._on_new_highway)
-        self.edit_panel.new_ramp_requested.connect(self._on_new_ramp)
-        self.edit_panel.export_requested.connect(self._on_export)
-        self.edit_panel.load_chunks_requested.connect(self._on_load_chunks)
+        self.edit_panel.pregenerate_requested.connect(self._on_pregenerate)
 
         self.edit_dock = QDockWidget("编辑", self)
         self.edit_dock.setWidget(self.edit_panel)
@@ -617,9 +611,6 @@ class MainWindow(QMainWindow):
         if self.export_thread and self.export_thread.isRunning():
             self.export_thread.cancel()
             self.export_thread.wait(3000)
-        if self.chunk_loader_thread and self.chunk_loader_thread.isRunning():
-            self.chunk_loader_thread.cancel()
-            self.chunk_loader_thread.wait(3000)
         super().closeEvent(event)
             # ---------------- 撤销 ----------------
     def _push_undo(self):
@@ -718,13 +709,63 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         QMessageBox.critical(self, "导出失败", message)
 
-    def _on_load_chunks(self):
+    def _on_pregenerate(self):
         if not self.highway_manager.highways:
             QMessageBox.information(self, "没有道路", "请先创建至少一条道路")
             return
-        if self.chunk_loader_thread and self.chunk_loader_thread.isRunning():
-            QMessageBox.information(self, "正在加载", "上一次加载还没完成")
+        if self.current_world_reader is None:
+            QMessageBox.information(self, "没有存档", "请先加载一个世界")
             return
+
+        regions = collect_region_coords(self.highway_manager.highways)
+        if not regions:
+            QMessageBox.information(self, "提示", "没有道路需要预生成")
+            return
+
+        dlg = PregenerateDialog(len(regions), parent=self)
+        if dlg.exec() != PregenerateDialog.DialogCode.Accepted:
+            return
+
+        # 默认保存位置：存档的 datapacks 目录
+        world_path = self.current_world_reader.world_path
+        datapacks_dir = world_path / "datapacks"
+        datapacks_dir.mkdir(exist_ok=True)
+
+        default_name = "highway_pregenerate.zip"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存数据包",
+            str(datapacks_dir / default_name),
+            "Zip 文件 (*.zip)",
+        )
+        if not save_path:
+            return
+
+        world_version = self.current_world_reader.get_world_version()
+        world_name = world_path.name
+
+        ok, msg, count = build_datapack(
+            self.highway_manager.highways,
+            world_version,
+            save_path,
+            world_name=world_name,
+        )
+
+        if not ok:
+            QMessageBox.critical(self, "生成失败", msg)
+            return
+
+        QMessageBox.information(
+            self,
+            "生成成功",
+            f"{msg}\n\n"
+            f"文件位置：\n{save_path}\n\n"
+            "如果就放在存档的 datapacks 目录里，\n"
+            "进游戏执行 /reload 即可。\n\n"
+            "然后在游戏里执行：\n"
+            "/function highway_planner:start"
+        )
+        self.status_bar.showMessage(f"数据包已生成：{save_path}")
 
         dlg = LoadChunksDialog(
             repo_url="https://github.com/Yuchen-14/MC_highway_planner",
